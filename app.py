@@ -1,39 +1,48 @@
+# =========================================================
+# MULTI CAMERA FACE CAPTURE (FULL STABLE FINAL VERSION)
+# CPU ONLY (YuNet)
 import cv2
 import time
 import os
 import math
 import glob
 import requests
-import numpy as np 
+import numpy as np
+import json
+
 from datetime import datetime
 from dotenv import load_dotenv
 from threading import Thread, Lock
 from queue import Queue
-import json
 
 load_dotenv()
 
-# ==============================
-# CONFIG
-# ==============================
+# =========================================================
+# ====================== CONFIG (.env) =====================
+# =========================================================
+
 SERVICE_ID = os.getenv("SERVICE_ID")
 ENDPOINT_URL = os.getenv("CCTV_ENDPOINT")
 
 MODEL_PATH = os.getenv("MODEL_PATH")
+
 SCORE_THRESHOLD = float(os.getenv("SCORE_THRESHOLD", 0.6))
+BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", 0)) 
 
 SAVE_FOLDER = os.getenv("SAVE_FOLDER", "image_face")
 SAVE_INTERVAL = float(os.getenv("SAVE_INTERVAL", 2.0))
 MAX_IMAGES = int(os.getenv("MAX_IMAGES", 150))
 
-ENABLE_RESIZE = os.getenv("ENABLE_RESIZE", "true").lower() == "true"
-RESIZE_WIDTH = int(os.getenv("RESIZE_WIDTH", 640))
-RESIZE_HEIGHT = int(os.getenv("RESIZE_HEIGHT", 360))
-MIN_SIZE_CAPTURE = int(os.getenv("MIN_SIZE_CAPTURE", 25))
+TARGET_MAX_WIDTH = int(os.getenv("RESIZE_WIDTH", 640))
+TARGET_MAX_HEIGHT = int(os.getenv("RESIZE_HEIGHT", 360))
+MIN_SIZE_CAPTURE = int(os.getenv("MIN_SIZE_CAPTURE", 0))
+
+FRAME_FPS = int(os.getenv("FRAME_FPS", 12))
+CROP_PADDING = float(os.getenv("CROP_PADDING", 0.40)) # 0.0 - 1.0, seberapa besar area crop dibanding bbox deteksi
 
 ENABLE_VIEW = os.getenv("ENABLE_VIEW", "true").lower() == "true"
-DISPLAY_WIDTH = int(os.getenv("DISPLAY_WIDTH", 400))
-DISPLAY_HEIGHT = int(os.getenv("DISPLAY_HEIGHT", 300))
+DISPLAY_WIDTH = int(os.getenv("DISPLAY_WIDTH", 1200))
+DISPLAY_HEIGHT = int(os.getenv("DISPLAY_HEIGHT", 800))
 
 CAMERA_REFRESH_INTERVAL = int(os.getenv("CAMERA_REFRESH_INTERVAL", 60))
 
@@ -42,18 +51,16 @@ DEBUG_VIDEO_FOLDER = os.getenv("DEBUG_VIDEO_FOLDER", "./sample_video")
 DEBUG_LOOP = os.getenv("DEBUG_LOOP", "true").lower() == "true"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-WEBHOOK_TIMEOUT = int(os.getenv("WEBHOOK_TIMEOUT", 5))
-
-
-
-
 
 print("ENABLE_VIEW:", ENABLE_VIEW)
+
+# RTSP lebih stabil
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
-# ==============================
-# SAFE MODEL PATH
-# ==============================
+# =========================================================
+# ================= SAFE MODEL PATH ========================
+# =========================================================
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 if not os.path.isabs(MODEL_PATH):
@@ -64,74 +71,50 @@ MODEL_PATH = os.path.abspath(MODEL_PATH)
 if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(f"Model ONNX tidak ditemukan: {MODEL_PATH}")
 
-print("MODEL_PATH:", MODEL_PATH, flush=True)
+print("MODEL_PATH:", MODEL_PATH)
 
-# ==============================
-# FOLDER SETUP
-# ==============================
+# =========================================================
+# ================= FOLDER SETUP ===========================
+# =========================================================
+
 FACE_FOLDER = os.path.join(SAVE_FOLDER, "face")
 FRAME_FOLDER = os.path.join(SAVE_FOLDER, "frame")
+
 os.makedirs(FACE_FOLDER, exist_ok=True)
 os.makedirs(FRAME_FOLDER, exist_ok=True)
 
 print("=== APP STARTED ===")
 print("SERVICE_ID:", SERVICE_ID)
 
-# ==============================
-# GLOBAL STORAGE
-# ==============================
+# =========================================================
+# ================= GLOBAL STORAGE =========================
+# =========================================================
+
 preview_frames = {}
 preview_lock = Lock()
+
 active_cameras = {}
 camera_lock = Lock()
 
-#====debug mode load video files as camera sources======
-def load_debug_sources(folder):
-    video_files = []
-    extensions = ("*.mp4", "*.avi", "*.mkv")
+queue = Queue(maxsize=300)
 
-    for ext in extensions:
-        video_files.extend(glob.glob(os.path.join(folder, ext)))
-
-    video_files.sort()
-
-    sources = []
-    for idx, path in enumerate(video_files):
-        # sources.append({
-        #     "cctv_id": f"debug_{idx+1}",
-        #     "client_id": "debug",
-        #     "stream_url": path   # ⚠ HARUS stream_url
-        # })
-
-         sources.append({
-            "cctv_id": "126a73ff-6d23-44a8-a496-194256bcf5db",
-            "client_id": "1102a7be-c4a5-42d6-ba0e-3905693e0722",
-            "stream_url": path   # ⚠ HARUS stream_url
-        })
-
-    print(f"[DEBUG MODE] Found {len(sources)} video files")
-    return sources
-# ==============================
-# WEBHOOK ASYNC
-# ==============================
-queue = Queue(maxsize=200)
-
+# =========================================================
+# ================= WEBHOOK WORKER =========================
+# =========================================================
 def webhook_worker():
     while True:
         item = queue.get()
         if item is None:
             break
 
-        #face_bytes, frame_bytes, face_name, frame_name, ts_iso, bbox, cctv_id, client_id = item
-        face_bytes, frame_bytes, face_name, frame_name, ts_iso, bbox, cctv_id, client_id, is_debug = item
+        face_bytes, frame_bytes, face_name, frame_name, ts_iso, bbox, cctv_id, client_id = item
 
         try:
             data_payload = {
                 "timestamp": ts_iso,
                 "bbox": f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
                 "channel_id": cctv_id,
-                "client_id": client_id,
-                "is_debug": str(is_debug).lower()
+                "client_id": client_id
             }
 
             log_payload = {
@@ -140,7 +123,8 @@ def webhook_worker():
                 "frame_file": frame_name,
                 "data": data_payload
             }
-            print(f"\n[WEBHOOK] Sending {json.dumps(log_payload, indent=4)}")
+
+            print(f"\n[WEBHOOK] Sending:\n{json.dumps(log_payload, indent=4)}")
 
             response = requests.post(
                 WEBHOOK_URL,
@@ -154,6 +138,9 @@ def webhook_worker():
 
             print(f"[WEBHOOK] Status: {response.status_code}")
 
+            if response.status_code >= 400:
+                print("[WEBHOOK] ERROR RESPONSE:", response.text)
+
         except requests.exceptions.Timeout:
             print("[WEBHOOK] TIMEOUT")
         except requests.exceptions.ConnectionError:
@@ -161,479 +148,334 @@ def webhook_worker():
         except Exception as e:
             print("[WEBHOOK] ERROR:", e)
 
-        queue.task_done()
+        finally:
+            queue.task_done()
+
 
 for _ in range(3):
     Thread(target=webhook_worker, daemon=True).start()
 
-# ==============================
-# HELPERS
-# ==============================
-def enforce_limit(folder):
-    files = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".jpg")]
-    if len(files) <= MAX_IMAGES:
-        return
-    files.sort(key=os.path.getmtime)
-    for f in files[:len(files)-MAX_IMAGES]:
-        os.remove(f)
+
+# =========================================================
+# ================= HELPERS ================================
+# =========================================================
 
 def iso_name(prefix):
-    ts = datetime.now().replace(microsecond=0).strftime("%Y-%m-%dT%H-%M-%SZ")
+    ts = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%SZ")
     return f"{prefix}_{ts}.jpg"
 
-# ==============================
-# CAMERA WORKER
-# ==============================
+
+def enforce_limit(folder):
+    files = sorted(
+        [os.path.join(folder, f) for f in os.listdir(folder)],
+        key=os.path.getmtime
+    )
+    while len(files) > MAX_IMAGES:
+        os.remove(files.pop(0))
+
+def expand_crop_bbox(x, y, w, h, img_w, img_h):
+    """
+    Perbesar area crop saja.
+    Rectangle preview tetap pakai bbox asli.
+    """
+    pad_w = int(w * CROP_PADDING)
+    pad_h = int(h * CROP_PADDING)
+
+    x -= pad_w
+    y -= pad_h
+    w += pad_w * 2
+    h += pad_h * 2
+
+    # safety clamp
+    x = max(0, x)
+    y = max(0, y)
+    w = min(w, img_w - x)
+    h = min(h, img_h - y)
+
+    return x, y, w, h
+
+def calc_sharpness(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return cv2.Laplacian(gray, cv2.CV_64F).var()
+
+# =========================================================
+# ================= DEBUG VIDEO LOADER =====================
+# =========================================================
+
+def load_debug_sources(folder):
+    files = []
+    for ext in ("*.mp4", "*.avi", "*.mkv"):
+        files += glob.glob(os.path.join(folder, ext))
+
+    sources = []
+    for i, path in enumerate(files):
+        sources.append({
+            "cctv_id": f"debug_{i}",
+            "client_id": "debug",
+            "stream_url": path
+        })
+
+    print("[DEBUG MODE] Found", len(sources), "files")
+    return sources
+
+
+# =========================================================
+# ================= CAMERA WORKER ==========================
+# =========================================================
+
 class CameraWorker:
 
-    def __init__(self, cctv_id, client_id, rtsp_url):
-        self.cctv_id = cctv_id
+    def __init__(self, cid, client_id, url):
+
+        self.cid = cid
         self.client_id = client_id
-        if DEBUG_MODE:
-            self.rtsp_url = rtsp_url   # langsung path video
-        else:
-            self.rtsp_url = "rtsp://" + rtsp_url
-        self.face_last_time = {}
-        self.face_memory_timeout = SAVE_INTERVAL
-        self.last_global_save = 0
+
+        self.rtsp = url if DEBUG_MODE else "rtsp://" + url
+
         self.running = True
-        
-        self.frame_interval = 1 / 15
-        self.last_frame_time = 0
-        self.bad_frame_count = 0
-        self.max_bad_frames = 10
 
-        print(f"[CAMERA START] {cctv_id}")
-
-        print(f"[CAMERA START] {cctv_id}")
-
-        self.cap = None   # WAJIB ADA
-
-        if DEBUG_MODE:
-            self.cap = cv2.VideoCapture(self.rtsp_url)
-        else:
-            self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-
-        if not self.cap.isOpened():
-            print(f"[ERROR] Cannot open stream: {self.rtsp_url}")
-
+        self.cap = cv2.VideoCapture(self.rtsp, cv2.CAP_FFMPEG)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self.cap.set(cv2.CAP_PROP_FPS, 15)
 
+        self.frame_interval = 1 / FRAME_FPS
+        self.last_time = 0
+
+        self.bad = 0
+        self.max_bad = 20
+
+        self.last_save = 0
+
+        self.face_last_time = {}
+
+        # YuNet detector (CPU only)
         self.detector = cv2.FaceDetectorYN_create(
             MODEL_PATH, "", (320, 320),
-            score_threshold=SCORE_THRESHOLD,
-            nms_threshold=0.3,
-            top_k=5000
+            score_threshold=SCORE_THRESHOLD
         )
 
-    def stop(self):
-        print(f"[CAMERA STOP] {self.cctv_id}")
-        self.running = False
-        if self.cap is not None:
-            self.cap.release()
+        # detector warmup
+        self.detector.setInputSize((320, 320))
+        self.detector.detect(np.zeros((320, 320, 3), dtype=np.uint8))
 
-    def can_save(self, box):
-        now = time.time()
+        print("[CAMERA START]", cid)
 
-        if now - self.last_global_save < SAVE_INTERVAL:
-            return False
-        x, y, w, h = box
-        cx = x + w // 2
-        cy = y + h // 2
 
-        bucket_x = cx // 150
-        bucket_y = cy // 150
+    # ================= adaptive resize =================
+    def resize_adaptive(self, frame):
+        h, w = frame.shape[:2]
 
-        face_id = (bucket_x, bucket_y)
+        if w > TARGET_MAX_WIDTH:
+            scale = TARGET_MAX_WIDTH / w
+            small = cv2.resize(frame, None, fx=scale, fy=scale)
+            return small, 1/scale, 1/scale
 
-        if face_id in self.face_last_time:
-            if now - self.face_last_time[face_id] >= SAVE_INTERVAL:
-                self.face_last_time[face_id] = now
-                self.last_global_save = now
-                return True
-            return False
-        else:
-            self.face_last_time[face_id] = now
-            self.last_global_save = now
-            return True
+        return frame, 1, 1
 
+
+    # ================= main loop =================
     def run(self):
+
         while self.running:
 
-            try:
-                # Flush buffer supaya ambil frame terbaru
-                if not DEBUG_MODE:
-                    for _ in range(2):
-                        self.cap.grab()
-
-                ret, frame = self.cap.read()
-
-                if not ret or frame is None:
-
-                    if DEBUG_MODE and DEBUG_LOOP:
-                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        continue
-
-                    self.bad_frame_count += 1
-                    print(f"[{self.cctv_id}] Bad frame ({self.bad_frame_count})")
-
-                    if DEBUG_MODE and DEBUG_LOOP:
-                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        continue
-
-                    self.bad_frame_count += 1
-
-                if not ret or frame is None:
-                    self.bad_frame_count += 1
-                    print(f"[{self.cctv_id}] Bad frame ({self.bad_frame_count})")
-
-                    if self.bad_frame_count >= self.max_bad_frames:
-                        print(f"[{self.cctv_id}] Too many bad frames. FULL RECONNECT...")
-                        self.cap.release()
-                        time.sleep(1)
-                    
-                        if DEBUG_MODE:
-                            self.cap = cv2.VideoCapture(self.rtsp_url)
-                        else:
-                            self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-
-                        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                        self.cap.set(cv2.CAP_PROP_FPS, 15)
-
-                        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                        self.cap.set(cv2.CAP_PROP_FPS, 15)
-
-                        self.bad_frame_count = 0
-
-                    continue
-
-                # Reset counter kalau frame normal
-                self.bad_frame_count = 0
-
-                # FPS limiter hanya untuk RTSP
-                if not DEBUG_MODE:
-                    now = time.time()
-                    if now - self.last_frame_time < self.frame_interval:
-                        continue
-                    self.last_frame_time = now
-
-                original = frame
-                oh, ow = original.shape[:2]
-
-                if ENABLE_RESIZE:
-                    resized = cv2.resize(original, (RESIZE_WIDTH, RESIZE_HEIGHT))
-                    sx = ow / RESIZE_WIDTH
-                    sy = oh / RESIZE_HEIGHT
-                else:
-                    resized = original
-                    sx = sy = 1
-
-                h, w = resized.shape[:2]
-                self.detector.setInputSize((w, h))
-                _, faces = self.detector.detect(resized)
-
-                boxes = []
-                if faces is not None and len(faces) > 0:
-
-                    for face in faces:
-
-                        x, y, fw, fh = face[:4].astype(int)
-
-                        # convert scale kalau resize aktif
-                        x = int(x * sx)
-                        y = int(y * sy)
-                        fw = int(fw * sx)
-                        fh = int(fh * sy)
-
-                        # skip face terlalu kecil (optional tapi bagus)
-                        if fw < MIN_SIZE_CAPTURE or fh < MIN_SIZE_CAPTURE:
-                            continue
-
-                        margin = 0.30
-                        extra_top = 0.40
-
-                        pad_w = int(fw * margin)
-                        pad_h = int(fh * margin)
-                        extra_h = int(fh * extra_top)
-
-                        x_new = x - pad_w
-                        y_new = y - pad_h - extra_h
-                        fw_new = fw + (2 * pad_w)
-                        fh_new = fh + (2 * pad_h) + extra_h
-
-                        h_img, w_img = original.shape[:2]
-
-                        x_new = max(0, x_new)
-                        y_new = max(0, y_new)
-
-                        if x_new + fw_new > w_img:
-                            fw_new = w_img - x_new
-
-                        if y_new + fh_new > h_img:
-                            fh_new = h_img - y_new
-
-                        boxes.append((x_new, y_new, fw_new, fh_new))
-
-                frame_with_box = original.copy()
-                for (x,y,fw,fh) in boxes:
-                    cv2.rectangle(frame_with_box, (x,y), (x+fw,y+fh), (0,255,0), 2)
-
-                if ENABLE_VIEW:
-                    with preview_lock:
-                        preview_frames[self.cctv_id] = frame_with_box.copy()
-
-                for box in boxes:
-                    if self.can_save(box):
-                        x,y,fw,fh = box
-                        face_img = original[y:y+fh, x:x+fw]
-
-                        face_name = iso_name("face")
-                        frame_name = iso_name("frame")
-
-                        face_path = os.path.join(FACE_FOLDER, face_name)
-                        frame_path = os.path.join(FRAME_FOLDER, frame_name)
-
-                        ret1, face_buffer = cv2.imencode(".jpg", face_img)
-                        ret2, frame_buffer = cv2.imencode(".jpg", frame_with_box)
-
-                        if ret1 and ret2:
-
-                            with open(face_path, "wb") as f:
-                                f.write(face_buffer.tobytes())
-
-                            with open(frame_path, "wb") as f:
-                                f.write(frame_buffer.tobytes())
-
-                            enforce_limit(FACE_FOLDER)
-                            enforce_limit(FRAME_FOLDER)
-
-                            ts = face_name.replace(".jpg","").replace("face_","")
-
-                            if WEBHOOK_URL and not queue.full():
-                                print("QUEUE SIZE:", queue.qsize())
-                                queue.put((
-                                    face_buffer.tobytes(),
-                                    frame_buffer.tobytes(),
-                                    face_name,
-                                    frame_name,
-                                    ts,
-                                    box,
-                                    self.cctv_id,
-                                    self.client_id,
-                                    DEBUG_MODE   # ⬅ tambahkan ini
-                                ))
-
-                            print(f"[{self.cctv_id}] Saved:", face_name)
-
-            except Exception as e:
-                print(f"[{self.cctv_id}] CRITICAL STREAM ERROR:", e)
-                time.sleep(1)
-
-# ==============================
-# FETCH CAMERA LIST
-# ==============================
-def fetch_cameras():
-    url = f"{ENDPOINT_URL}?service_id={SERVICE_ID}"
-
-    try:
-        r = requests.get(url, timeout=10)
-
-        if r.status_code != 200:
-            print(f"[CAMERA API] Status error: {r.status_code}")
-            return None
-
-        data = r.json()
-
-        if "data" not in data:
-            print("[CAMERA API] Invalid response format")
-            return None
-
-        return data["data"]
-
-    except requests.exceptions.Timeout:
-        print("[CAMERA API] TIMEOUT")
-    except requests.exceptions.ConnectionError:
-        print("[CAMERA API] CONNECTION ERROR")
-    except Exception as e:
-        print("[CAMERA API] ERROR:", e)
-
-    return None
-
-# ==============================
-# CAMERA MANAGER
-# ==============================
-def camera_manager():
-    while True:
-        start_time = time.time()
-
-        try:
-            if DEBUG_MODE:
-                cameras = load_debug_sources(DEBUG_VIDEO_FOLDER)
-            else:
-                cameras = fetch_cameras()
-
-            if cameras is None:
-                print("[CAMERA MANAGER] API down, retry in 10s")
-                time.sleep(10)
+            if time.time() - self.last_time < self.frame_interval:
                 continue
 
-            print(f"[CAMERA MANAGER] Reload camera list ({len(cameras)} cameras)")
+            self.last_time = time.time()
 
-            with camera_lock:
-                existing = set(active_cameras.keys())
-                incoming = set(cam["cctv_id"] for cam in cameras)
+            # flush buffer
+            for _ in range(2):
+                self.cap.grab()
 
-                # Tambah kamera baru
-                for cam in cameras:
-                    cid = cam["cctv_id"]
-                    if cid not in existing:
-                        print("[CAMERA ADDED]", cid)
-                        worker = CameraWorker(cid, cam["client_id"], cam["stream_url"])
-                        active_cameras[cid] = worker
-                        #Thread(target=worker.run, daemon=True).start()
-                        t = Thread(target=worker.run, daemon=True)
-                        worker.thread = t
-                        t.start()
+            ret, frame = self.cap.read()
 
-                # Hapus kamera yang tidak ada lagi
-                for cid in list(existing - incoming):
-                    print("[CAMERA REMOVED]", cid)
+            if not ret:
+                self.bad += 1
 
-                    worker = active_cameras.pop(cid, None)
-                    if worker:
-                        worker.stop()
-                        if hasattr(worker, "thread"):
-                            worker.thread.join(timeout=2)
+                if self.bad >= self.max_bad:
+                    print("[RECONNECT]", self.cid)
+                    self.cap.release()
+                    time.sleep(1)
+                    self.cap = cv2.VideoCapture(self.rtsp, cv2.CAP_FFMPEG)
+                    self.bad = 0
+                continue
 
-                    with preview_lock:
-                        preview_frames.pop(cid, None)
+            self.bad = 0
 
-        except Exception as e:
-            print("[CAMERA MANAGER ERROR]", e)
+            resized, sx, sy = self.resize_adaptive(frame)
 
-        # Hitung sisa waktu supaya interval presisi
-        elapsed = time.time() - start_time
-        sleep_time = max(0, CAMERA_REFRESH_INTERVAL - elapsed)
-        time.sleep(sleep_time)
+            h, w = resized.shape[:2]
+            self.detector.setInputSize((w, h))
+
+            _, faces = self.detector.detect(resized)
+
+            boxes = []
+
+            if faces is not None:
+                for f in faces:
+                    score = float(f[4])  # confidence YuNet
+                    label = f"C:{score:.2f}"
+                    print (label)
+                    if score < SCORE_THRESHOLD:
+                        continue
+                    x, y, fw, fh = f[:4].astype(int)
+
+                    x = int(x*sx)
+                    y = int(y*sy)
+                    fw = int(fw*sx)
+                    fh = int(fh*sy)
+
+                    if fw < MIN_SIZE_CAPTURE:
+                        continue
+
+                    # clamp safety
+                    x = max(0, x)
+                    y = max(0, y)
+                    fw = min(fw, frame.shape[1]-x)
+                    fh = min(fh, frame.shape[0]-y)
+
+                    boxes.append((x,y,fw,fh))
+
+            view = frame.copy()
+
+            for box in boxes:
+
+                x,y,fw,fh = box
+
+                cv2.rectangle(view,(x,y),(x+fw,y+fh),(0,255,0),2)
+
+
+                cx = x + fw//2
+                cy = y + fh//2
+
+                bucket = (cx//150, cy//150)
+                now = time.time()
+
+                # cooldown per wajah
+                if bucket in self.face_last_time and now - self.face_last_time[bucket] < SAVE_INTERVAL:
+                    continue
+                self.face_last_time[bucket] = now
+                # =========================
+                # crop diperbesar (padding)
+                # =========================
+                pad_w = int(fw * CROP_PADDING)
+                pad_h = int(fh * CROP_PADDING)
+
+                cx = max(0, x - pad_w)
+                cy = max(0, y - pad_h)
+                cw = min(frame.shape[1] - cx, fw + pad_w*2)
+                ch = min(frame.shape[0] - cy, fh + pad_h*2)
+
+                face_img = frame[cy:cy+ch, cx:cx+cw]
+
+                gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+                sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+                if sharpness < BLUR_THRESHOLD:
+                    continue
+
+                face_name = iso_name("face")
+                frame_name = iso_name("frame")
+
+                fb1 = cv2.imencode(".jpg", face_img)[1].tobytes()
+                fb2 = cv2.imencode(".jpg", view)[1].tobytes()
+
+                open(os.path.join(FACE_FOLDER, face_name),"wb").write(fb1)
+                open(os.path.join(FRAME_FOLDER, frame_name),"wb").write(fb2)
+
+                enforce_limit(FACE_FOLDER)
+                enforce_limit(FRAME_FOLDER)
+
+                if WEBHOOK_URL:
+                    queue.put((fb1,fb2,face_name,frame_name,face_name,box,self.cid,self.client_id))
+
+                print(f"[{self.cid}] Saved:", face_name)
+
+                self.last_save = time.time()
+
+            with preview_lock:
+                preview_frames[self.cid] = view
+
+
+# =========================================================
+# ================= FETCH CAMERA LIST ======================
+# =========================================================
+
+def fetch_cameras():
+    try:
+        r = requests.get(f"{ENDPOINT_URL}?service_id={SERVICE_ID}", timeout=10)
+        return r.json()["data"]
+    except:
+        return []
+
+
+# =========================================================
+# ================= CAMERA MANAGER =========================
+# =========================================================
+
+def camera_manager():
+
+    while True:
+
+        cams = load_debug_sources(DEBUG_VIDEO_FOLDER) if DEBUG_MODE else fetch_cameras()
+
+        with camera_lock:
+            existing = set(active_cameras.keys())
+
+            for c in cams:
+                if c["cctv_id"] not in existing:
+                    w = CameraWorker(c["cctv_id"], c["client_id"], c["stream_url"])
+                    Thread(target=w.run, daemon=True).start()
+                    active_cameras[c["cctv_id"]] = w
+
+        time.sleep(CAMERA_REFRESH_INTERVAL)
+
 
 Thread(target=camera_manager, daemon=True).start()
 
 print("System ready")
 
 
-#=========config auto grid based on camera count===========
-def calculate_grid(n):
-    if n <= 0:
-        return 1, 1
-    rows = math.ceil(math.sqrt(n))
-    cols = math.ceil(n / rows)
-    return rows, cols
-
-# ==============================
-# GRID VIEW LOOP (WINDOWS SAFE)
-# ==============================
+# =========================================================
+# ================= MAIN LOOP ==============================
+# =========================================================
 
 if ENABLE_VIEW:
+
     cv2.namedWindow("Face Detection", cv2.WINDOW_NORMAL)
 
-while True:
-
-    if ENABLE_VIEW:
+    while True:
 
         with preview_lock:
-            frames_raw = list(preview_frames.values())
+            frames = list(preview_frames.values())
 
-        cam_count = len(frames_raw)
-
-        if cam_count == 0:
-            blank = 255 * np.ones(
-                (DISPLAY_HEIGHT, DISPLAY_WIDTH, 3), dtype="uint8"
-            )
-            cv2.resizeWindow("Face Detection", DISPLAY_WIDTH, DISPLAY_HEIGHT)
-            cv2.imshow("Face Detection", blank)
-            cv2.waitKey(1)
+        if not frames:
             time.sleep(0.1)
             continue
 
-        # =====================================
-        # DYNAMIC LANDSCAPE GRID
-        # =====================================
-        best_rows, best_cols = 1, cam_count
-        best_ratio_diff = 999
+        rows = math.ceil(math.sqrt(len(frames)))
+        cols = math.ceil(len(frames)/rows)
 
-        for rows in range(1, cam_count + 1):
-            cols = math.ceil(cam_count / rows)
+        tw = DISPLAY_WIDTH//cols
+        th = DISPLAY_HEIGHT//rows
 
-            window_ratio = cols / rows
-            target_ratio = DISPLAY_WIDTH / DISPLAY_HEIGHT
+        imgs = [cv2.resize(f,(tw,th)) for f in frames]
 
-            ratio_diff = abs(window_ratio - target_ratio)
+        while len(imgs) < rows*cols:
+            imgs.append(np.zeros((th,tw,3),dtype=np.uint8))
 
-            if ratio_diff < best_ratio_diff:
-                best_ratio_diff = ratio_diff
-                best_rows = rows
-                best_cols = cols
-
-        rows = best_rows
-        cols = best_cols
-
-        # =====================================
-        # TILE SIZE (LOCK 16:9)
-        # =====================================
-        tile_width = DISPLAY_WIDTH // cols
-        tile_height = int(tile_width * 9 / 16)
-
-        # Jika tinggi melebihi batas, hitung ulang dari tinggi
-        if tile_height * rows > DISPLAY_HEIGHT:
-            tile_height = DISPLAY_HEIGHT // rows
-            tile_width = int(tile_height * 16 / 9)
-
-        # =====================================
-        # REAL WINDOW SIZE
-        # =====================================
-        window_width = tile_width * cols
-        window_height = tile_height * rows
-
-        # Clamp agar tidak melebihi ENV
-        window_width = min(window_width, DISPLAY_WIDTH)
-        window_height = min(window_height, DISPLAY_HEIGHT)
-
-        cv2.resizeWindow("Face Detection", window_width, window_height)
-
-        # =====================================
-        # RESIZE FRAMES
-        # =====================================
-        frames = []
-
-        for f in frames_raw:
-            resized = cv2.resize(f, (tile_width, tile_height))
-            frames.append(resized)
-
-        total_slots = rows * cols
-
-        while len(frames) < total_slots:
-            frames.append(
-                255 * np.ones((tile_height, tile_width, 3), dtype="uint8")
-            )
-
-        frames = frames[:total_slots]
-
-        grid_rows = []
-        idx = 0
+        grid=[]
+        idx=0
         for r in range(rows):
-            row = cv2.hconcat(frames[idx:idx+cols])
-            grid_rows.append(row)
-            idx += cols
+            grid.append(cv2.hconcat(imgs[idx:idx+cols]))
+            idx+=cols
 
-        grid = cv2.vconcat(grid_rows)
+        cv2.imshow("Face Detection", cv2.vconcat(grid))
 
-        cv2.imshow("Face Detection", grid)
-
-        if cv2.waitKey(1) == ord("q"):
+        if cv2.waitKey(1)==ord("q"):
             break
 
-    time.sleep(0.03)
-
-if ENABLE_VIEW:
     cv2.destroyAllWindows()
+
+else:
+    print("Running headless mode")
+    while True:
+        time.sleep(1)
