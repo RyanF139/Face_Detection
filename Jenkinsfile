@@ -18,7 +18,7 @@ pipeline {
 
         stage('Clone Repository') {
             steps {
-                git 'https://github.com/USERNAME/face-capture.git'
+                git 'https://github.com/RyanF139/face-detection.git'
             }
         }
 
