@@ -1,15 +1,8 @@
-<<<<<<< HEAD
-opencv-python-headless
-numpy
-python-dotenv
-requests
-yt-dlp
-boto3
-=======
 opencv-python==4.9.0.80
 numpy==1.26.4
 requests==2.31.0
 python-dotenv==1.0.1
 psutil==5.9.8
-pip install gunicorn
->>>>>>> 8677cb5 (update latency)
+gunicorn
+yt-dlp
+boto3
