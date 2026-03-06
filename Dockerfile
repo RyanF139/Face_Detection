@@ -18,4 +18,4 @@ COPY . .
 
 RUN mkdir -p image_face/face image_face/frame
 
-CMD ["python", "-u", "app_v2.py"]
+CMD ["python", "-u", "app_v3.py"]
