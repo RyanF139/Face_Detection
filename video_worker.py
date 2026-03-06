@@ -258,7 +258,7 @@ def webhook_worker():
         if item is None:
             break
 
-        face_bytes, frame_bytes, face_name, frame_name, ts_iso, bbox, video_id, client_id = item
+        face_bytes, frame_bytes, face_name, frame_name, ts_iso, bbox, video_id, client_id , score = item
 
         try:
             # BUG FIX #3: webhook face event tidak boleh di-comment
@@ -270,6 +270,7 @@ def webhook_worker():
             data_payload = {
                 "timestamp":  ts_iso,
                 "bbox":       f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
+                "confidence": round(score, 4),
                 "video_id": video_id,
                 "client_id":  client_id
             }
@@ -356,7 +357,7 @@ def load_debug_sources(folder):
         files += glob.glob(os.path.join(folder, ext))
     sources = []
     for i, path in enumerate(files):
-        sources.append({"video_id": f"debug_{i}", "client_id": "debug", "video_url": path})
+        sources.append({"video_id": f"55ea96ea-573d-40d1-a500-7c2938166a7f", "client_id": "4ff1f636-3d2d-4497-b680-be6cbf9cabf2", "video_url": path})
     print("[DEBUG MODE] Found", len(sources), "files")
     return sources
 
@@ -389,8 +390,9 @@ class VideoWorker:
         )
         self.detector.setInputSize((320, 320))
         self.detector.detect(np.zeros((320, 320, 3), dtype=np.uint8))
-
-        self.writer = FrameVideoWriter(video_id)
+        
+        # Jangan membuat writer di debug mode
+        # self.writer = FrameVideoWriter(video_id)
 
         print(f"[VIDEO START] {video_id} | {video_url[:70]}...")
 
@@ -452,28 +454,28 @@ class VideoWorker:
         s3_url     = None
         local_path = None
 
-        # ── Step 1: Render MP4 ─────────────────────────────
-        try:
-            local_path = self.writer.render()
-            print(f"[FINALIZE] Render result: {local_path}")
-        except Exception as e:
-            print(f"[FINALIZE] Render error: {e}")
+        # ── Step 1: Render MP4 (jika ada writer) ─────────────────────────────
+        # try:
+        #     local_path = self.writer.render()
+        #     print(f"[FINALIZE] Render result: {local_path}")
+        # except Exception as e:
+        #     print(f"[FINALIZE] Render error: {e}")
 
         # ── Step 2: Upload S3 ──────────────────────────────
-        if local_path and s3_uploader:
-            try:
-                filename = os.path.basename(local_path)
-                s3_key   = f"{S3_PREFIX}/{self.client_id}/{self.video_id}/{filename}"
-                s3_url   = s3_uploader.upload_file(local_path, s3_key)
-            except (BotoCoreError, ClientError) as e:
-                print(f"[FINALIZE] S3 boto error: {e}")
-            except Exception as e:
-                print(f"[FINALIZE] S3 unexpected error: {e}")
-        else:
-            # Log kenapa S3 di-skip agar mudah debug
-            print(f"[FINALIZE] S3 skip — "
-                  f"local_path={local_path!r}, "
-                  f"s3_uploader={'ready' if s3_uploader else 'None (S3_ENABLED=false atau config salah)'}")
+        # if local_path and s3_uploader:
+        #     try:
+        #         filename = os.path.basename(local_path)
+        #         s3_key   = f"{S3_PREFIX}/{self.client_id}/{self.video_id}/{filename}"
+        #         s3_url   = s3_uploader.upload_file(local_path, s3_key)
+        #     except (BotoCoreError, ClientError) as e:
+        #         print(f"[FINALIZE] S3 boto error: {e}")
+        #     except Exception as e:
+        #         print(f"[FINALIZE] S3 unexpected error: {e}")
+        # else:
+        #     # Log kenapa S3 di-skip agar mudah debug
+        #     print(f"[FINALIZE] S3 skip — "
+        #           f"local_path={local_path!r}, "
+        #           f"s3_uploader={'ready' if s3_uploader else 'None (S3_ENABLED=false atau config salah)'}")
 
         # ── Step 3: Webhook done ───────────────────────────
         # Selalu kirim, bahkan jika S3 gagal (s3_url=None)
@@ -615,13 +617,14 @@ class VideoWorker:
                 ts_iso = datetime.utcnow().isoformat() + "Z"
                 webhook_queue.put((
                     fb1, fb2, face_name, frame_name,
-                    ts_iso, box, self.video_id, self.client_id
+                    ts_iso, box, self.video_id, self.client_id, score
                 ))
 
                 print(f"[{self.video_id}] Face: {face_name}")
                 self.last_save = time.time()
 
-            self.writer.write(view)
+            #jangan di write view ke file
+            # self.writer.write(view)
 
             with preview_lock:
                 preview_frames[self.video_id] = view
@@ -652,12 +655,14 @@ def video_manager():
     while True:
         sources = load_debug_sources(DEBUG_VIDEO_FOLDER) if DEBUG_MODE \
                   else fetch_videos()
+        print(f"[MANAGER] Found {len(sources)} videos")
 
         with camera_lock:
             existing    = set(active_cameras.keys())
             current_ids = {c["video_id"] for c in sources}
 
             for c in sources:
+                print(f"[MANAGER] Processing: {c}")
                 vid = c["video_id"]
                 if vid not in existing:
                     w = VideoWorker(vid, c["client_id"], c["video_url"])
