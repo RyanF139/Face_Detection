@@ -47,7 +47,7 @@ DISPLAY_HEIGHT = int(os.getenv("DISPLAY_HEIGHT", 800))
 CAMERA_REFRESH_INTERVAL = int(os.getenv("CAMERA_REFRESH_INTERVAL", 60))
 
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
-DEBUG_VIDEO_FOLDER = os.getenv("DEBUG_VIDEO_FOLDER", "./sample_video")
+DEBUG_VIDEO_FOLDER = os.getenv("DEBUG_VIDEO_DIR", "./sample_video")
 DEBUG_LOOP = os.getenv("DEBUG_LOOP", "true").lower() == "true"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
