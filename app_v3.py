@@ -5,16 +5,20 @@ import math
 import requests
 import numpy as np
 import json
+
 from datetime import datetime
 from dotenv import load_dotenv
 from threading import Thread, Lock
 from queue import Queue
 
+
 # ================= PERFORMANCE =================
+
 cv2.setNumThreads(1)
 cv2.setUseOptimized(True)
 
 load_dotenv()
+
 
 # ================= ENV =================
 
@@ -46,12 +50,6 @@ DISPLAY_HEIGHT = int(os.getenv("DISPLAY_HEIGHT", 800))
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 DEBUG_VIDEO_DIR = os.getenv("DEBUG_VIDEO_DIR", "./sample_videos")
 
-# ================= ANTI SPAM =================
-
-FACE_COOLDOWN = float(os.getenv("FACE_COOLDOWN", 8))
-FACE_MOVE_THRESHOLD = int(os.getenv("FACE_MOVE_THRESHOLD", 80))
-FACE_BUCKET_SIZE = int(os.getenv("FACE_BUCKET_SIZE", 220))
-
 # ================= ADAPTIVE FPS =================
 
 IDLE_FPS = int(os.getenv("IDLE_FPS", 3))
@@ -67,6 +65,7 @@ os.makedirs(FRAME_FOLDER, exist_ok=True)
 
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
+
 # ================= GLOBAL =================
 
 active_cameras = {}
@@ -77,17 +76,85 @@ preview_lock = Lock()
 
 queue = Queue(maxsize=300)
 
-# ================= UTIL =================
+
+# ================= WEBHOOK WORKER =================
+
+def webhook_worker():
+    while True:
+
+        item = queue.get()
+
+        if item is None:
+            break
+
+        try:
+
+            (
+                face_bytes,
+                frame_bytes,
+                face_name,
+                frame_name,
+                bbox,
+                score,
+                cid,
+                client_id,
+            ) = item
+
+            payload = {
+                "timestamp": face_name,
+                "bbox": f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
+                "confidence": round(score, 4),
+                "channel_id": cid,
+                "client_id": client_id,
+            }
+
+            log_payload = {
+                "url": WEBHOOK_URL,
+                "face_file": face_name,
+                "frame_file": frame_name,
+                "data": payload,
+            }
+
+            print(f"\n[WEBHOOK] Sending:\n{json.dumps(log_payload, indent=4)}")
+
+            requests.post(
+                WEBHOOK_URL,
+                files=[
+                    ("files", (face_name, face_bytes, "image/jpeg")),
+                    ("files", (frame_name, frame_bytes, "image/jpeg")),
+                ],
+                data=payload,
+                timeout=10,
+            )
+
+            print(f"[WEBHOOK OK] {face_name} | conf={score:.3f}")
+
+        except Exception as e:
+
+            print("[WEBHOOK ERROR]", e)
+
+        finally:
+
+            queue.task_done()
+
+
+if WEBHOOK_URL:
+    Thread(target=webhook_worker, daemon=True).start()
+
+
+# ================= HELPERS =================
 
 def iso_name(prefix):
-    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+
+    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%SZ")
+    return f"{prefix}_{ts}.jpg"
 
 
 def enforce_limit(folder):
 
     files = sorted(
         [os.path.join(folder, f) for f in os.listdir(folder)],
-        key=os.path.getmtime
+        key=os.path.getmtime,
     )
 
     while len(files) > MAX_IMAGES:
@@ -101,13 +168,11 @@ def expand_crop_bbox(x, y, w, h, img_w, img_h):
 
     x -= pad_w
     y -= pad_h
-
     w += pad_w * 2
     h += pad_h * 2
 
     x = max(0, x)
     y = max(0, y)
-
     w = min(w, img_w - x)
     h = min(h, img_h - y)
 
@@ -115,89 +180,35 @@ def expand_crop_bbox(x, y, w, h, img_w, img_h):
 
 
 def calc_sharpness(img):
+
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 
-# ================= FACE QUALITY FILTER =================
+# ================= DEBUG MODE =================
 
-def is_valid_face(f, x, y, w, h, scale):
+def load_debug_sources(folder):
 
-    lx, ly = f[4] * scale, f[5] * scale
-    rx, ry = f[6] * scale, f[7] * scale
-    nx, ny = f[8] * scale, f[9] * scale
+    files = []
 
-    eye_angle = abs(math.degrees(math.atan2(ry - ly, rx - lx)))
+    for ext in ("*.mp4", "*.avi", "*.mkv"):
+        files += glob.glob(os.path.join(folder, ext))
 
-    if eye_angle > 40:
-        return False
+    sources = []
 
-    ratio = w / float(h)
+    for i, path in enumerate(files):
 
-    if ratio < 0.50 or ratio > 1.50:
-        return False
-
-    nose_ratio = (nx - x) / float(w)
-
-    if nose_ratio < 0.15 or nose_ratio > 0.85:
-        return False
-
-    return True
-
-
-# ================= WEBHOOK WORKER =================
-
-def webhook_worker():
-
-    while True:
-
-        item = queue.get()
-
-        if item is None:
-            break
-
-        try:
-
-            face_bytes, frame_bytes, face_name, frame_name, bbox, score, cid, client_id = item
-
-            payload = {
-                "timestamp": face_name,
-                "bbox": f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
-                "confidence": round(score, 4),
-                "channel_id": cid,
-                "client_id": client_id
+        sources.append(
+            {
+                "cctv_id": f"debug_{i}",
+                "client_id": "debug",
+                "stream_url": path,
             }
+        )
 
-            log_payload = {
-                "url": WEBHOOK_URL,
-                "face_file": face_name,
-                "frame_file": frame_name,
-                "data": payload
-            }
+    print("[DEBUG MODE] Found", len(sources), "files")
 
-            print(f"\n[WEBHOOK] Sending:\n{json.dumps(log_payload, indent=4)}")
-
-            requests.post(
-                WEBHOOK_URL,
-                files=[
-                    ("files", (face_name, face_bytes, "image/jpeg")),
-                    ("files", (frame_name, frame_bytes, "image/jpeg")),
-                ],
-                data=payload,
-                timeout=10
-            )
-
-            print(f"[WEBHOOK OK] {face_name} | conf={score:.3f}")
-
-        except Exception as e:
-            print("[WEBHOOK ERROR]", e)
-
-        finally:
-            queue.task_done()
-
-
-if WEBHOOK_URL:
-    Thread(target=webhook_worker, daemon=True).start()
+    return sources
 
 
 # ================= CAMERA WORKER =================
@@ -216,68 +227,46 @@ class CameraWorker:
         self.cap = cv2.VideoCapture(self.stream_source, cv2.CAP_FFMPEG)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        self.bad = 0
-        self.max_bad = 10
-
         self.frame_interval = 1 / FRAME_FPS
         self.last_time = 0
 
-        self.face_memory = {}
+        self.bad = 0
+        self.max_bad = 10
 
+        self.face_last_time = {}
         self.last_face_time = time.time()
+
+        # YuNet detector (CPU only)
 
         self.detector = cv2.FaceDetectorYN_create(
             MODEL_PATH,
             "",
-            (640, 640),
+            (320, 320),
             score_threshold=SCORE_THRESHOLD,
-            nms_threshold=0.4,
-            top_k=5000
         )
 
-        # detector warmup
-        dummy = np.zeros((640,640,3), dtype=np.uint8)
-        self.detector.setInputSize((640,640))
+        dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+        self.detector.setInputSize((640, 640))
         self.detector.detect(dummy)
 
         print(f"[CAMERA START] {cid}")
 
-    def stop(self):
 
-        self.running = False
-        self.cap.release()
-
-        print(f"[CAMERA STOP] {self.cid}")
+    # ================= adaptive resize =================
 
     def resize_adaptive(self, frame):
 
         h, w = frame.shape[:2]
 
-        max_width = TARGET_MAX_WIDTH
+        if w > TARGET_MAX_WIDTH:
 
-        scale = min(1.0, max_width / w)
+            scale = TARGET_MAX_WIDTH / w
+            small = cv2.resize(frame, None, fx=scale, fy=scale)
 
-        resized = cv2.resize(frame, None, fx=scale, fy=scale)
+            return small, 1 / scale, 1 / scale
 
-        if resized.shape[1] < 640:
-            scale_up = 640 / resized.shape[1]
-            resized = cv2.resize(resized, None, fx=scale_up, fy=scale_up)
-            scale = scale / scale_up
+        return frame, 1, 1
 
-        return resized, 1 / scale
-
-    def cleanup_memory(self):
-
-        now = time.time()
-
-        remove = []
-
-        for k, v in self.face_memory.items():
-            if now - v[0] > 60:
-                remove.append(k)
-
-        for k in remove:
-            del self.face_memory[k]
 
     def adaptive_fps(self):
 
@@ -286,18 +275,17 @@ class CameraWorker:
 
         return 1 / FRAME_FPS
 
+
     def run(self):
 
         while self.running:
-
-            self.frame_interval = self.adaptive_fps()
 
             if time.time() - self.last_time < self.frame_interval:
                 continue
 
             self.last_time = time.time()
 
-            for _ in range(4):
+            for _ in range(2):
                 self.cap.grab()
 
             ret, frame = self.cap.read()
@@ -323,7 +311,7 @@ class CameraWorker:
 
             view = frame.copy()
 
-            resized, scale = self.resize_adaptive(frame)
+            resized, sx, sy = self.resize_adaptive(frame)
 
             h, w = resized.shape[:2]
 
@@ -344,18 +332,12 @@ class CameraWorker:
 
                     x, y, fw, fh = f[:4].astype(int)
 
-                    x = int(x * scale)
-                    y = int(y * scale)
-                    fw = int(fw * scale)
-                    fh = int(fh * scale)
+                    x = int(x * sx)
+                    y = int(y * sy)
+                    fw = int(fw * sx)
+                    fh = int(fh * sy)
 
                     if fw < MIN_SIZE_CAPTURE:
-                        continue
-
-                    if fw > MAX_FACE_SIZE:
-                        continue
-
-                    if not is_valid_face(f, x, y, fw, fh, scale):
                         continue
 
                     x = max(0, x)
@@ -370,40 +352,36 @@ class CameraWorker:
 
                 x, y, fw, fh, score = box
 
-                cv2.rectangle(view, (x, y), (x+fw, y+fh), (0,255,0), 2)
+                cv2.rectangle(view, (x, y), (x + fw, y + fh), (0, 255, 0), 2)
 
                 cx = x + fw // 2
                 cy = y + fh // 2
 
-                bucket = (cx // FACE_BUCKET_SIZE, cy // FACE_BUCKET_SIZE)
+                bucket = (cx // 150, cy // 150)
 
                 now = time.time()
 
-                if bucket in self.face_memory:
+                if bucket in self.face_last_time and now - self.face_last_time[bucket] < SAVE_INTERVAL:
+                    continue
 
-                    last_time, last_pos = self.face_memory[bucket]
+                self.face_last_time[bucket] = now
 
-                    dist = math.hypot(cx-last_pos[0], cy-last_pos[1])
+                pad_w = int(fw * CROP_PADDING)
+                pad_h = int(fh * CROP_PADDING)
 
-                    if now - last_time < FACE_COOLDOWN:
-                        continue
+                cx = max(0, x - pad_w)
+                cy = max(0, y - pad_h)
 
-                    if dist < FACE_MOVE_THRESHOLD:
-                        continue
+                cw = min(frame.shape[1] - cx, fw + pad_w * 2)
+                ch = min(frame.shape[0] - cy, fh + pad_h * 2)
 
-                self.face_memory[bucket] = (now, (cx,cy))
+                face_img = frame[cy : cy + ch, cx : cx + cw]
 
-                self.last_face_time = time.time()
+                gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
 
-                cx2, cy2, cw, ch = expand_crop_bbox(
-                    x, y, fw, fh,
-                    frame.shape[1],
-                    frame.shape[0]
-                )
+                sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
 
-                face_img = frame[cy2:cy2+ch, cx2:cx2+cw]
-
-                if calc_sharpness(face_img) < BLUR_THRESHOLD:
+                if sharpness < BLUR_THRESHOLD:
                     continue
 
                 face_name = iso_name("face")
@@ -419,22 +397,26 @@ class CameraWorker:
                 enforce_limit(FRAME_FOLDER)
 
                 if WEBHOOK_URL:
-                    try:
-                        queue.put_nowait(
-                            (fb1, fb2, face_name, frame_name,
-                             (x,y,fw,fh),
-                             score,
-                             self.cid,
-                             self.client_id)
+
+                    queue.put(
+                        (
+                            fb1,
+                            fb2,
+                            face_name,
+                            frame_name,
+                            (x, y, fw, fh),   # bbox
+                            score,            # confidence
+                            self.cid,
+                            self.client_id,
                         )
-                    except:
-                        print("[QUEUE FULL] webhook queue penuh")
+                    )
 
-                print(f"[{self.cid}] SAVED {face_name}")
+                print(f"[{self.cid}] Saved:", face_name)
 
-            self.cleanup_memory()
+                self.last_save = time.time()
 
             with preview_lock:
+
                 preview_frames[self.cid] = view
 
 
@@ -452,11 +434,13 @@ def load_cameras():
 
             if file.lower().endswith(".mp4"):
 
-                videos.append({
-                    "cctv_id": file,
-                    "client_id": "debug",
-                    "stream_url": os.path.join(DEBUG_VIDEO_DIR, file)
-                })
+                videos.append(
+                    {
+                        "cctv_id": file,
+                        "client_id": "debug",
+                        "stream_url": os.path.join(DEBUG_VIDEO_DIR, file),
+                    }
+                )
 
         print(f"[DEBUG] Total video ditemukan: {len(videos)}")
 
@@ -468,7 +452,10 @@ def load_cameras():
 
         try:
 
-            r = requests.get(f"{ENDPOINT_URL}?service_id={SERVICE_ID}", timeout=10)
+            r = requests.get(
+                f"{ENDPOINT_URL}?service_id={SERVICE_ID}",
+                timeout=10,
+            )
 
             data = r.json()["data"]
 
@@ -510,7 +497,7 @@ def camera_manager():
                         w = CameraWorker(
                             c["cctv_id"],
                             c["client_id"],
-                            c["stream_url"]
+                            c["stream_url"],
                         )
 
                         Thread(target=w.run, daemon=True).start()
@@ -531,7 +518,9 @@ def camera_manager():
 
                     active_cameras[rid].stop()
                     del active_cameras[rid]
+
                     print(f"[CAMERA REMOVED] {rid}")
+
                 except:
                     pass
 
@@ -582,11 +571,12 @@ if ENABLE_VIEW:
             imgs.append(np.zeros((th, tw, 3), dtype=np.uint8))
 
         grid = []
+
         idx = 0
 
         for r in range(rows):
 
-            row_imgs = imgs[idx:idx+cols]
+            row_imgs = imgs[idx : idx + cols]
 
             try:
                 grid.append(cv2.hconcat(row_imgs))
