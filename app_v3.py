@@ -19,8 +19,13 @@ load_dotenv()
 # ================= ENV =================
 
 SERVICE_ID = os.getenv("SERVICE_ID")
-ENDPOINT_URL = os.getenv("CCTV_ENDPOINT")
+
 MODEL_PATH = os.getenv("MODEL_PATH")
+
+ENDPOINT_URL = os.getenv("CCTV_ENDPOINT")
+CAMERA_REFRESH_INTERVAL = int(os.getenv("CAMERA_REFRESH_INTERVAL", 60))
+
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 SCORE_THRESHOLD = float(os.getenv("SCORE_THRESHOLD", 0.35))
 BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", 0))
@@ -28,16 +33,21 @@ BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", 0))
 SAVE_FOLDER = os.getenv("SAVE_FOLDER", "image_face")
 SAVE_INTERVAL = float(os.getenv("SAVE_INTERVAL", 2.0))
 MAX_IMAGES = int(os.getenv("MAX_IMAGES", 150))
+CROP_PADDING = float(os.getenv("CROP_PADDING", 0.35))
 
 TARGET_MAX_WIDTH = int(os.getenv("RESIZE_WIDTH", 960))
-FRAME_FPS = int(os.getenv("FRAME_FPS", 12))
 MIN_SIZE_CAPTURE = int(os.getenv("MIN_SIZE_CAPTURE", 0))
 MAX_FACE_SIZE = int(os.getenv("MAX_FACE_SIZE", 800))
 
-CROP_PADDING = float(os.getenv("CROP_PADDING", 0.35))
+FRAME_FPS = int(os.getenv("FRAME_FPS", 12))
+IDLE_FPS = int(os.getenv("IDLE_FPS", 3))
+IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", 10))
 
-CAMERA_REFRESH_INTERVAL = int(os.getenv("CAMERA_REFRESH_INTERVAL", 60))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+# ================= ANTI SPAM =================
+
+FACE_COOLDOWN = float(os.getenv("FACE_COOLDOWN", 8))
+FACE_MOVE_THRESHOLD = int(os.getenv("FACE_MOVE_THRESHOLD", 80))
+FACE_BUCKET_SIZE = int(os.getenv("FACE_BUCKET_SIZE", 220))
 
 ENABLE_VIEW = os.getenv("ENABLE_VIEW", "true").lower() == "true"
 DISPLAY_WIDTH = int(os.getenv("DISPLAY_WIDTH", 1200))
@@ -46,16 +56,6 @@ DISPLAY_HEIGHT = int(os.getenv("DISPLAY_HEIGHT", 800))
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 DEBUG_VIDEO_DIR = os.getenv("DEBUG_VIDEO_DIR", "./sample_videos")
 
-# ================= ANTI SPAM =================
-
-FACE_COOLDOWN = float(os.getenv("FACE_COOLDOWN", 8))
-FACE_MOVE_THRESHOLD = int(os.getenv("FACE_MOVE_THRESHOLD", 80))
-FACE_BUCKET_SIZE = int(os.getenv("FACE_BUCKET_SIZE", 220))
-
-# ================= ADAPTIVE FPS =================
-
-IDLE_FPS = int(os.getenv("IDLE_FPS", 3))
-IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", 10))
 
 # ================= FOLDER =================
 
