@@ -17,8 +17,3 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 RUN mkdir -p image_face/face image_face/frame
-
-COPY start.sh .
-RUN chmod +x start.sh
-
-CMD ["./start.sh"]

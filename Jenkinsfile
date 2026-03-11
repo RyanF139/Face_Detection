@@ -1,56 +1,73 @@
 pipeline {
-    agent any
+agent { label 'built-in' }
 
-    environment {
-        APP_NAME = "face-capture"
-        IMAGE_NAME = "face-capture:latest"
-    }
+```
+environment {
+    REPO_URL = 'https://github.com/RyanF139/Face_Detection.git'
+    ENV_SOURCE = '/opt/config/face-detection/.env'
+}
 
-    stages {
+stages {
 
-        stage('System Update') {
-            steps {
-                sh '''
-                sudo apt update -y
-                '''
-            }
-        }
-
-        stage('Clone Repository') {
-            steps {
-                git 'https://github.com/RyanF139/face-detection.git'
-            }
-        }
-
-        stage('Build Docker Image') {
-            steps {
-                sh '''
-                docker build -t $IMAGE_NAME .
-                '''
-            }
-        }
-
-        stage('Stop Old Container') {
-            steps {
-                sh '''
-                docker stop $APP_NAME || true
-                docker rm $APP_NAME || true
-                '''
-            }
-        }
-
-        stage('Run Container') {
-            steps {
-                sh '''
-                docker run -d \
-                  --name $APP_NAME \
-                  --network host \
-                  --restart unless-stopped \
-                  --env-file .env \
-                  -v $(pwd)/image_face:/app/image_face \
-                  $IMAGE_NAME
-                '''
-            }
+    stage('Checkout') {
+        steps {
+            git branch: 'main',
+                url: "${REPO_URL}",
+                credentialsId: '001'
         }
     }
+
+    stage('Prepare Environment File') {
+        steps {
+            sh 'cp $ENV_SOURCE .env'
+        }
+    }
+
+    stage('Ensure Network') {
+        steps {
+            sh '''
+            docker network inspect shared_network >/dev/null 2>&1 || \
+            docker network create shared_network
+            '''
+        }
+    }
+
+    stage('Stop Old Containers') {
+        steps {
+            sh '''
+            docker compose down || true
+            '''
+        }
+    }
+
+    stage('Build Containers') {
+        steps {
+            sh '''
+            docker compose build --no-cache
+            '''
+        }
+    }
+
+    stage('Run Containers') {
+        steps {
+            sh '''
+            docker compose up -d
+            '''
+        }
+    }
+
+    stage('Show Status') {
+        steps {
+            sh 'docker ps | grep face || true'
+        }
+    }
+}
+
+post {
+    success { echo 'Deploy sukses 🚀' }
+    failure { echo 'Deploy gagal ❌' }
+    always  { echo 'Pipeline completed.' }
+}
+```
+
 }

@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+
+  face-capture:
+    build: .
+    container_name: face-detection
+    command: python -u app_v3.py
+    env_file:
+      - .env
+    volumes:
+      - ./image_face:/app/image_face
+    network_mode: host
+    restart: unless-stopped
+
+  face-process:
+    build: .
+    container_name: video_analytic
+    command: python -u video_worker.py
+    env_file:
+      - .env
+    volumes:
+      - ./image_face:/app/image_face
+    network_mode: host
+    restart: unless-stopped
