@@ -2,7 +2,7 @@ pipeline {
 agent { label 'built-in' }
 
 environment {
-    REPO_URL = 'https://github.com/RyanF139/Face_Detection.git'
+    REPO_URL   = 'https://github.com/RyanF139/Face_Detection.git'
     ENV_SOURCE = '/opt/config/face-detection/.env'
 }
 
@@ -33,33 +33,49 @@ stages {
 
     stage('Stop Old Containers') {
         steps {
-            sh 'docker compose down || true'
+            sh '''
+            docker stop face-detection || true
+            docker rm face-detection || true
+            docker compose down --remove-orphans || true
+            '''
         }
     }
 
     stage('Build Containers') {
         steps {
-            sh 'docker compose build --no-cache'
+            sh '''
+            docker compose build --no-cache
+            '''
         }
     }
 
     stage('Run Containers') {
         steps {
-            sh 'docker compose up -d'
+            sh '''
+            docker compose up -d
+            '''
         }
     }
 
     stage('Show Status') {
         steps {
-            sh 'docker ps | grep face || true'
+            sh '''
+            docker ps | grep face || true
+            '''
         }
     }
 }
 
 post {
-    success { echo 'Deploy sukses 🚀' }
-    failure { echo 'Deploy gagal ❌' }
-    always  { echo 'Pipeline completed.' }
+    success {
+        echo 'Deploy sukses 🚀'
+    }
+    failure {
+        echo 'Deploy gagal ❌'
+    }
+    always {
+        echo 'Pipeline completed.'
+    }
 }
 
 }
