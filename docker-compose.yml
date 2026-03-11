@@ -16,7 +16,7 @@ services:
   face-process:
     build: .
     container_name: video_analytic
-    command: python -u video_worker.py
+    command: python -u video_process.py
     env_file:
       - .env
     volumes:
