@@ -18,4 +18,7 @@ COPY . .
 
 RUN mkdir -p image_face/face image_face/frame
 
-CMD ["python", "-u", "app_v3.py"]
+COPY start.sh .
+RUN chmod +x start.sh
+
+CMD ["./start.sh"]
