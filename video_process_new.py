@@ -24,7 +24,7 @@ ENDPOINT_URL = os.getenv("VIDEO_ENDPOINT")
 MODEL_PATH   = os.getenv("MODEL_PATH")
 
 SCORE_THRESHOLD  = float(os.getenv("SCORE_THRESHOLD", 0.35))
-BLUR_THRESHOLD   = float(os.getenv("BLUR_THRESHOLD", 0))
+BLUR_THRESHOLD_VIDEO   = float(os.getenv("BLUR_THRESHOLD_VIDEO", 0))
 
 SAVE_FOLDER   = os.getenv("SAVE_FOLDER", "image_face")
 SAVE_INTERVAL = float(os.getenv("SAVE_INTERVAL", 2.0))
@@ -32,7 +32,7 @@ MAX_IMAGES    = int(os.getenv("MAX_IMAGES", 150))
 
 TARGET_MAX_WIDTH = int(os.getenv("RESIZE_WIDTH", 960))
 FRAME_FPS        = int(os.getenv("FRAME_FPS", 12))
-MIN_SIZE_CAPTURE = int(os.getenv("MIN_SIZE_CAPTURE", 0))
+MIN_SIZE_CAPTURE_VIDEO = int(os.getenv("MIN_SIZE_CAPTURE_VIDEO", 0))
 MAX_FACE_SIZE    = int(os.getenv("MAX_FACE_SIZE", 800))
 
 CROP_PADDING = float(os.getenv("CROP_PADDING", 0.35))
@@ -498,7 +498,7 @@ class VideoWorker:
                     fw = int(fw * scale)
                     fh = int(fh * scale)
 
-                    if fw < MIN_SIZE_CAPTURE:
+                    if fw < MIN_SIZE_CAPTURE_VIDEO:
                         continue
 
                     if fw > MAX_FACE_SIZE:
@@ -555,7 +555,7 @@ class VideoWorker:
 
                 
 
-                if calc_sharpness(face_img) < BLUR_THRESHOLD:
+                if calc_sharpness(face_img) < BLUR_THRESHOLD_VIDEO:
                     continue
 
                 face_name  = iso_name("face")
