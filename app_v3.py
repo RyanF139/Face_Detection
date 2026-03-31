@@ -75,13 +75,16 @@ camera_lock = Lock()
 preview_frames = {}
 preview_lock = Lock()
 
-queue = Queue(maxsize=300)
+queue = Queue(maxsize=1000)
 
 # ================= UTIL =================
 
-def iso_name(prefix):
-    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+# def iso_name(prefix):
+#     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
 
+def iso_name(prefix):
+    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%SZ")
+    return f"{prefix}_{ts}.jpg"
 
 def enforce_limit(folder):
 
@@ -158,10 +161,11 @@ def webhook_worker():
 
         try:
 
-            face_bytes, frame_bytes, face_name, frame_name, bbox, score, cid, client_id = item
+            face_bytes, frame_bytes, face_name, frame_name, ts_iso, bbox, score, cid, client_id = item
 
             payload = {
-                "timestamp": face_name,
+                "timestamp": ts_iso,
+                "type": "face_detection_service",
                 "bbox": f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}",
                 "confidence": round(score, 4),
                 "channel_id": cid,
@@ -170,7 +174,7 @@ def webhook_worker():
 
             log_payload = {
                 "url": WEBHOOK_URL,
-                "face_file": face_name,
+                #"face_file": face_name,
                 "frame_file": frame_name,
                 "data": payload
             }
@@ -180,7 +184,7 @@ def webhook_worker():
             requests.post(
                 WEBHOOK_URL,
                 files=[
-                    ("files", (face_name, face_bytes, "image/jpeg")),
+                    #("files", (face_name, face_bytes, "image/jpeg")),
                     ("files", (frame_name, frame_bytes, "image/jpeg")),
                 ],
                 data=payload,
@@ -190,6 +194,7 @@ def webhook_worker():
             print(f"[WEBHOOK OK] {face_name} | conf={score:.3f}")
 
         except Exception as e:
+            print(f"[WEBHOOK FAIL] log_payload={log_payload}")
             print("[WEBHOOK ERROR]", e)
 
         finally:
@@ -370,7 +375,7 @@ class CameraWorker:
 
                 x, y, fw, fh, score = box
 
-                cv2.rectangle(view, (x, y), (x+fw, y+fh), (0,255,0), 2)
+                # cv2.rectangle(view, (x, y), (x+fw, y+fh), (0,255,0), 2)
 
                 cx = x + fw // 2
                 cy = y + fh // 2
@@ -422,10 +427,11 @@ class CameraWorker:
                     try:
                         queue.put_nowait(
                             (fb1, fb2, face_name, frame_name,
-                             (x,y,fw,fh),
-                             score,
-                             self.cid,
-                             self.client_id)
+                            ts_iso := datetime.now().isoformat(),
+                            (x,y,fw,fh),
+                            score,
+                            self.cid,
+                            self.client_id)
                         )
                     except:
                         print("[QUEUE FULL] webhook queue penuh")
