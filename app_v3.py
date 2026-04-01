@@ -5,7 +5,7 @@ import math
 import requests
 import numpy as np
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from threading import Thread, Lock
 from queue import Queue
@@ -68,7 +68,7 @@ os.makedirs(FRAME_FOLDER, exist_ok=True)
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
 # ================= GLOBAL =================
-
+JAKARTA_TZ = timezone(timedelta(hours=7))
 active_cameras = {}
 camera_lock = Lock()
 
@@ -83,8 +83,9 @@ queue = Queue(maxsize=1000)
 #     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
 
 def iso_name(prefix):
-    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%SZ")
-    return f"{prefix}_{ts}.jpg"
+    ts_iso = datetime.now(JAKARTA_TZ).isoformat(timespec="seconds")
+    ts_iso = ts_iso.replace(":", "-")  # supaya aman untuk nama file
+    return f"{prefix}_{ts_iso}.jpg"
 
 def enforce_limit(folder):
 
@@ -427,7 +428,7 @@ class CameraWorker:
                     try:
                         queue.put_nowait(
                             (fb1, fb2, face_name, frame_name,
-                            ts_iso := datetime.now().isoformat(),
+                            ts_iso := datetime.now(JAKARTA_TZ).isoformat(timespec="seconds"),
                             (x,y,fw,fh),
                             score,
                             self.cid,
