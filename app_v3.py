@@ -79,13 +79,12 @@ queue = Queue(maxsize=1000)
 
 # ================= UTIL =================
 
-# def iso_name(prefix):
-#     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+def iso_timestamp():
+    return datetime.now(JAKARTA_TZ).isoformat(timespec="seconds")
 
-def iso_name(prefix):
-    ts_iso = datetime.now(JAKARTA_TZ).isoformat(timespec="seconds")
-    ts_iso = ts_iso.replace(":", "-")  # supaya aman untuk nama file
-    return f"{prefix}_{ts_iso}.jpg"
+def iso_name(prefix, ts_iso):
+    safe_ts = ts_iso.replace(":", "-")
+    return f"{prefix}_{safe_ts}.jpg"
 
 def enforce_limit(folder):
 
@@ -162,7 +161,7 @@ def webhook_worker():
 
         try:
 
-            face_bytes, frame_bytes, face_name, frame_name, ts_iso, bbox, score, cid, client_id = item
+            face_bytes, frame_bytes, face_name, frame_name, name_camera ,ts_iso, bbox, score, cid, client_id = item
 
             payload = {
                 "timestamp": ts_iso,
@@ -177,6 +176,8 @@ def webhook_worker():
                 "url": WEBHOOK_URL,
                 #"face_file": face_name,
                 "frame_file": frame_name,
+                "chanel_id": cid,
+                "camera_name": name_camera,
                 "data": payload
             }
 
@@ -210,10 +211,11 @@ if WEBHOOK_URL:
 
 class CameraWorker:
 
-    def __init__(self, cid, client_id, url):
+    def __init__(self, cid, client_id, url, name):
 
         self.cid = cid
         self.client_id = client_id
+        self.name_camera = name
 
         self.stream_source = url if DEBUG_MODE else "rtsp://" + url
 
@@ -246,7 +248,7 @@ class CameraWorker:
         self.detector.setInputSize((640,640))
         self.detector.detect(dummy)
 
-        print(f"[CAMERA START] {cid}")
+        print(f"[CAMERA START] {cid} -> {name}")
 
     def stop(self):
 
@@ -314,7 +316,7 @@ class CameraWorker:
 
                 if self.bad >= self.max_bad:
 
-                    print(f"[RECONNECT] {self.cid}")
+                    print(f"[RECONNECT] {self.cid} -> {self.name_camera}")
 
                     self.cap.release()
                     time.sleep(1)
@@ -412,8 +414,10 @@ class CameraWorker:
                 if calc_sharpness(face_img) < BLUR_THRESHOLD:
                     continue
 
-                face_name = iso_name("face")
-                frame_name = iso_name("frame")
+                ts_iso = iso_timestamp()
+
+                face_name = iso_name("face", ts_iso)
+                frame_name = iso_name("frame", ts_iso)
 
                 fb1 = cv2.imencode(".jpg", face_img)[1].tobytes()
                 fb2 = cv2.imencode(".jpg", view)[1].tobytes()
@@ -428,7 +432,8 @@ class CameraWorker:
                     try:
                         queue.put_nowait(
                             (fb1, fb2, face_name, frame_name,
-                            ts_iso := datetime.now(JAKARTA_TZ).isoformat(timespec="seconds"),
+                            self.name_camera,
+                            ts_iso,
                             (x,y,fw,fh),
                             score,
                             self.cid,
@@ -517,18 +522,19 @@ def camera_manager():
                         w = CameraWorker(
                             c["cctv_id"],
                             c["client_id"],
-                            c["stream_url"]
+                            c["stream_url"],
+                            c.get("name", "unknown")
                         )
 
                         Thread(target=w.run, daemon=True).start()
 
                         active_cameras[c["cctv_id"]] = w
 
-                        print(f"[NEW CAMERA STARTED] {c['cctv_id']}")
+                        print(f"[NEW CAMERA STARTED] {c['cctv_id']} -> {c['name']}")
 
                     except Exception as e:
 
-                        print(f"[FAILED START] {c['cctv_id']} -> {e}")
+                        print(f"[FAILED START] {c['cctv_id']} -> {c['name']} -> {e}")
 
             removed_ids = active_ids - api_ids
 
