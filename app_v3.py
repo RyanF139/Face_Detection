@@ -216,22 +216,32 @@ class CameraWorker:
         self.cid = cid
         self.client_id = client_id
         self.name_camera = name
-
         self.stream_source = url if DEBUG_MODE else "rtsp://" + url
-
         self.running = True
+
+        self.connected = False
+        self.reconnecting = False
+        self.dead = False
+        self.detecting = False
+        self.last_frame_time = 0
 
         self.cap = cv2.VideoCapture(self.stream_source, cv2.CAP_FFMPEG)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+        if self.cap.isOpened():
+            self.connected = True
+            self.dead = False
+            print(f"[RTSP CONNECTED] {self.cid} -> {self.name_camera}")
+        else:
+            self.connected = False
+            self.dead = True
+            print(f"[RTSP FAILED] {self.cid} -> {self.name_camera}")
+
         self.bad = 0
         self.max_bad = 10
-
         self.frame_interval = 1 / FRAME_FPS
         self.last_time = 0
-
         self.face_memory = {}
-
         self.last_face_time = time.time()
 
         self.detector = cv2.FaceDetectorYN_create(
@@ -310,6 +320,13 @@ class CameraWorker:
 
             ret, frame = self.cap.read()
 
+            if ret:
+                self.connected = True
+                self.dead = False
+                self.last_frame_time = time.time()
+            else:
+                self.connected = False
+
             if not ret:
 
                 self.bad += 1
@@ -318,10 +335,22 @@ class CameraWorker:
 
                     print(f"[RECONNECT] {self.cid} -> {self.name_camera}")
 
+                    self.reconnecting = True
+
                     self.cap.release()
                     time.sleep(1)
 
                     self.cap = cv2.VideoCapture(self.stream_source, cv2.CAP_FFMPEG)
+
+                    if self.cap.isOpened():
+                        self.connected = True
+                        self.reconnecting = False
+                        self.dead = False
+                        print(f"[RECONNECT OK] {self.cid}")
+                    else:
+                        self.connected = False
+                        self.dead = True
+                        print(f"[RECONNECT FAIL] {self.cid} -> {self.name_camera}")
 
                     self.bad = 0
 
@@ -495,6 +524,33 @@ def load_cameras():
             return []
 
 
+def print_camera_status():
+
+    with camera_lock:
+
+        total = len(active_cameras)
+
+        connected = sum(1 for w in active_cameras.values() if w.connected)
+        reconnecting = sum(1 for w in active_cameras.values() if w.reconnecting)
+        dead = sum(1 for w in active_cameras.values() if w.dead)
+
+    qsize = queue.qsize()
+
+    print("\n========== CAMERA STATUS ==========")
+    print(f"Total Camera      : {total}")
+    print(f"RTSP Connected    : {connected}")
+    print(f"RTSP Reconnecting : {reconnecting}")
+    print(f"RTSP Dead         : {dead}")
+    print(f"Webhook Queue     : {qsize}")
+    print("===================================\n")
+
+
+def monitoring_worker():
+
+    while True:
+        print_camera_status()
+        time.sleep(10)
+
 # ================= CAMERA MANAGER =================
 
 def camera_manager():
@@ -557,6 +613,7 @@ def camera_manager():
 
 
 Thread(target=camera_manager, daemon=True).start()
+Thread(target=monitoring_worker, daemon=True).start()
 
 
 # ================= VIEW =================
